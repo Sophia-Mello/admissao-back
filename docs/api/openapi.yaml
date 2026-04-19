@@ -1,0 +1,2752 @@
+openapi: 3.0.3
+info:
+  title: R&S Admissao API
+  description: |
+    API do sistema de Recrutamento e Selecao (R&S) para agendamento de aulas teste.
+
+    Este sistema permite que candidatos agendem aulas teste em unidades educacionais,
+    enquanto a equipe de recrutamento gerencia vagas, configuracoes de horarios e
+    bloqueios de agenda.
+
+    ## Autenticacao
+
+    A API utiliza dois mecanismos de autenticacao:
+
+    - **JWT Bearer Token**: Para usuarios autenticados (equipe de recrutamento)
+    - **Acesso Publico**: Alguns endpoints sao publicos para candidatos
+
+    Endpoints marcados com `optionalAuth` podem ser acessados com ou sem autenticacao,
+    com comportamento diferenciado baseado no contexto.
+
+    ## Ambientes
+
+    | Ambiente | URL Base |
+    |----------|----------|
+    | Producao | https://api.rsadmissao.tomeducacao.com.br/api/v1 |
+    | Homologacao | https://api-homolog.rsadmissao.tomeducacao.com.br/api/v1 |
+
+    ## Versionamento
+
+    A API segue versionamento semantico. A versao atual e `v1`.
+
+    ## Rate Limiting
+
+    A API implementa limitacao de taxa para prevenir abuso:
+
+    | Endpoint | Limite | Janela |
+    |----------|--------|--------|
+    | `POST /auth/login` | 5 requisicoes | 1 minuto |
+    | `POST /booking` (publico) | 10 requisicoes | 1 minuto |
+    | `GET /availability` | 60 requisicoes | 1 minuto |
+    | Demais endpoints | 100 requisicoes | 1 minuto |
+
+    **Headers de resposta:**
+    - `X-RateLimit-Limit`: Limite total de requisicoes
+    - `X-RateLimit-Remaining`: Requisicoes restantes na janela
+    - `X-RateLimit-Reset`: Timestamp Unix de reset da janela
+
+    Quando o limite e excedido, a API retorna `429 Too Many Requests`.
+
+    ## Seguranca
+
+    A API implementa os seguintes headers de seguranca:
+    - `X-Content-Type-Options: nosniff`
+    - `X-Frame-Options: DENY`
+    - `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+
+  version: 1.0.0
+  contact:
+    name: Equipe de Desenvolvimento
+    email: dev@tomeducacao.com.br
+  license:
+    name: Proprietario
+    url: https://tomeducacao.com.br
+
+servers:
+  - url: https://api.rsadmissao.tomeducacao.com.br/api/v1
+    description: Producao
+  - url: https://api-homolog.rsadmissao.tomeducacao.com.br/api/v1
+    description: Homologacao
+  - url: http://localhost:4001/api/v1
+    description: Desenvolvimento Local
+
+tags:
+  - name: availability
+    description: Consulta de slots disponiveis para agendamento
+  - name: booking
+    description: Gerenciamento de agendamentos de aulas teste
+  - name: schedule
+    description: Configuracao de horarios de funcionamento
+  - name: schedule-block
+    description: Bloqueios temporarios de horarios
+  - name: job
+    description: Gerenciamento de vagas (integracao Gupy)
+  - name: gupy
+    description: Integracao direta com API Gupy
+  - name: auth
+    description: Autenticacao e gerenciamento de usuarios
+
+paths:
+  # ============================================================================
+  # AVAILABILITY
+  # ============================================================================
+  /availability:
+    get:
+      tags:
+        - availability
+      summary: Consultar slots disponiveis
+      description: |
+        Retorna os slots disponiveis para agendamento de aulas teste.
+
+        O comportamento varia conforme o contexto de autenticacao:
+
+        | Aspecto | Publico (sem auth) | Privado (com auth) |
+        |---------|--------------------|--------------------|
+        | Range de datas | Menor entre d_rules e valid_from/valid_until | valid_from ate valid_until |
+        | Sabado | Excluido | Incluido |
+        | Status dos slots | Apenas `vago` | Todos (vago, ocupado, bloqueado) |
+        | Config exposta | Apenas slot_size | Configuracao completa |
+
+        A paginacao e feita por semana, usando domingo como separador.
+      operationId: getAvailability
+      security:
+        - {}
+        - bearerAuth: []
+      parameters:
+        - name: id_unidade
+          in: query
+          required: true
+          description: ID da unidade para consultar disponibilidade
+          schema:
+            type: integer
+            example: 123
+        - name: page
+          in: query
+          required: false
+          description: |
+            Numero da pagina (semana) a ser retornada.
+            Se omitido, retorna a semana que contem a data atual.
+          schema:
+            type: integer
+            minimum: 1
+            example: 1
+      responses:
+        '200':
+          description: Slots disponiveis retornados com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AvailabilityResponse'
+              examples:
+                publico:
+                  summary: Resposta para acesso publico
+                  value:
+                    success: true
+                    config:
+                      slot_size: 50
+                    pagination:
+                      current_page: 1
+                      total_pages: 4
+                      week_start: "2025-01-06"
+                      week_end: "2025-01-10"
+                    slots:
+                      - date: "2025-01-06"
+                        day_of_week: "segunda-feira"
+                        slot_start: "08:00:00"
+                        slot_end: "08:50:00"
+                        status: "vago"
+                      - date: "2025-01-06"
+                        day_of_week: "segunda-feira"
+                        slot_start: "09:00:00"
+                        slot_end: "09:50:00"
+                        status: "vago"
+                privado:
+                  summary: Resposta para acesso autenticado
+                  value:
+                    success: true
+                    config:
+                      slot_size: 50
+                      morning_start_at: "08:00:00"
+                      morning_end_at: "12:00:00"
+                      afternoon_start_at: "13:00:00"
+                      afternoon_end_at: "17:00:00"
+                      d_rule_start: 1
+                      d_rule_end: 30
+                      valid_from: "2025-01-01"
+                      valid_until: "2025-03-31"
+                    pagination:
+                      current_page: 1
+                      total_pages: 4
+                      week_start: "2025-01-06"
+                      week_end: "2025-01-11"
+                    slots:
+                      - date: "2025-01-06"
+                        day_of_week: "segunda-feira"
+                        slot_start: "08:00:00"
+                        slot_end: "08:50:00"
+                        status: "vago"
+                      - date: "2025-01-06"
+                        day_of_week: "segunda-feira"
+                        slot_start: "09:00:00"
+                        slot_end: "09:50:00"
+                        status: "ocupado"
+                        booking_id: 456
+                        candidate_name: "Maria Silva"
+        '400':
+          description: Parametros invalidos ou periodo nao disponivel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingIdUnidade:
+                  summary: id_unidade nao informado
+                  value:
+                    success: false
+                    errors:
+                      - msg: "id_unidade e obrigatorio"
+                        param: "id_unidade"
+                        location: "query"
+                periodoIndisponivel:
+                  summary: Periodo de agendamento nao disponivel
+                  value:
+                    success: false
+                    error: "Periodo de agendamento nao disponivel"
+        '404':
+          description: Configuracao de horarios nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Configuracao de horarios nao encontrada"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ============================================================================
+  # BOOKING
+  # ============================================================================
+  /booking:
+    get:
+      tags:
+        - booking
+      summary: Listar agendamentos
+      description: |
+        Lista agendamentos com filtros opcionais por unidade e/ou CPF.
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: listBookings
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id_unidade
+          in: query
+          required: false
+          description: Filtrar por ID da unidade
+          schema:
+            type: integer
+            example: 123
+        - name: cpf
+          in: query
+          required: false
+          description: Filtrar por CPF do candidato (somente digitos)
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+            example: "12345678901"
+        - name: status
+          in: query
+          required: false
+          description: Filtrar por status do agendamento
+          schema:
+            $ref: '#/components/schemas/BookingStatus'
+        - name: start_date
+          in: query
+          required: false
+          description: Data inicial do periodo (formato YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+            example: "2025-01-01"
+        - name: end_date
+          in: query
+          required: false
+          description: Data final do periodo (formato YYYY-MM-DD)
+          schema:
+            type: string
+            format: date
+            example: "2025-01-31"
+      responses:
+        '200':
+          description: Lista de agendamentos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  bookings:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BookingListItem'
+              example:
+                success: true
+                bookings:
+                  - id_booking: 1
+                    id_job_unidade: 10
+                    id_application_gupy: "app_12345"
+                    cpf: "12345678901"
+                    candidate_name: "Maria Silva"
+                    candidate_email: "maria@email.com"
+                    start_at: "2025-01-15T09:00:00-03:00"
+                    end_at: "2025-01-15T09:50:00-03:00"
+                    status_booking: "agendado"
+                    unidade_nome: "Escola Exemplo"
+                    job_name: "Professor de Matematica"
+                    created_at: "2025-01-10T14:30:00-03:00"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags:
+        - booking
+      summary: Criar agendamento
+      description: |
+        Cria um novo agendamento de aula teste.
+
+        **Fluxo Publico (sem auth):**
+        - Requer validacao do candidato via Gupy (middleware `validateApplication`)
+        - Aplica d_rules para validar se o horario esta no periodo permitido
+        - Cria eventos no Google Calendar para coordenador e candidato
+
+        **Fluxo Privado (com auth):**
+        - Permite agendamento manual pela equipe de recrutamento
+        - Bypassa d_rules (pode agendar fora do periodo publico)
+        - Marca o agendamento como manual no evento do calendario
+
+        **Regras de Negocio:**
+        - Candidato pode ter no maximo 1 agendamento ativo (status = 'agendado')
+        - Candidato pode ter no maximo 1 aula teste realizada por unidade (status = 'compareceu')
+        - Slot deve estar disponivel (nao ocupado ou bloqueado)
+      operationId: createBooking
+      security:
+        - {}
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+            examples:
+              publico:
+                summary: Agendamento por candidato
+                value:
+                  id_job_unidade: 10
+                  jobId: "job_gupy_123"
+                  applicationId: "app_gupy_456"
+                  start_at: "2025-01-15T09:00:00-03:00"
+              privado:
+                summary: Agendamento manual por recrutamento
+                value:
+                  id_job_unidade: 10
+                  id_application_gupy: "app_gupy_456"
+                  cpf: "12345678901"
+                  candidate_name: "Maria Silva"
+                  candidate_email: "maria@email.com"
+                  start_at: "2025-01-15T09:00:00-03:00"
+      responses:
+        '201':
+          description: Agendamento criado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+              example:
+                success: true
+                message: "Agendamento criado com sucesso"
+                booking:
+                  id_booking: 1
+                  id_job_unidade: 10
+                  id_application_gupy: "app_gupy_456"
+                  cpf: "12345678901"
+                  start_at: "2025-01-15T09:00:00-03:00"
+                  end_at: "2025-01-15T09:50:00-03:00"
+                  status_booking: "agendado"
+                  id_calendar_event: "cal_event_123"
+                  id_calendar_event_candidato: "cal_event_456"
+                  created_at: "2025-01-10T14:30:00-03:00"
+        '400':
+          description: Dados invalidos ou regra de negocio violada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                slotOcupado:
+                  summary: Slot ja ocupado
+                  value:
+                    success: false
+                    error: "Horario nao disponivel para agendamento"
+                candidatoComAgendamento:
+                  summary: Candidato ja possui agendamento ativo
+                  value:
+                    success: false
+                    error: "Candidato ja possui agendamento ativo"
+                candidatoJaRealizou:
+                  summary: Candidato ja realizou aula teste na unidade
+                  value:
+                    success: false
+                    error: "Candidato ja realizou aula teste nesta unidade"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Candidato nao elegivel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Candidato nao esta na fase para agendamento de aula teste"
+                current_step: "Entrevista"
+        '404':
+          description: Vaga ou candidatura nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Vaga nao encontrada"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /booking/{id}:
+    patch:
+      tags:
+        - booking
+      summary: Atualizar agendamento
+      description: |
+        Atualiza dados de um agendamento existente.
+
+        **Campos atualizaveis:**
+        - `status_booking`: Atualiza o status (compareceu, faltou, cancelado)
+        - `evaluation`: Adiciona/atualiza avaliacao da aula teste
+
+        Para cancelamento, use o endpoint DELETE em vez de PATCH com status='cancelado'.
+
+        **Autorizacao:** Requer role `recrutamento` ou `admin`.
+      operationId: updateBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID do agendamento
+          schema:
+            type: integer
+            example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBookingRequest'
+            examples:
+              marcarCompareceu:
+                summary: Marcar como compareceu
+                value:
+                  status_booking: "compareceu"
+              adicionarAvaliacao:
+                summary: Adicionar avaliacao
+                value:
+                  evaluation:
+                    nota_didatica: 8
+                    nota_dominio_conteudo: 9
+                    nota_relacionamento: 7
+                    observacoes: "Candidato demonstrou bom dominio do conteudo"
+                    aprovado: true
+      responses:
+        '200':
+          description: Agendamento atualizado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+              example:
+                success: true
+                message: "Agendamento atualizado com sucesso"
+                booking:
+                  id_booking: 1
+                  id_job_unidade: 10
+                  id_application_gupy: "app_gupy_456"
+                  start_at: "2025-01-15T09:00:00-03:00"
+                  end_at: "2025-01-15T09:50:00-03:00"
+                  status_booking: "compareceu"
+                  created_at: "2025-01-10T14:30:00-03:00"
+                  evaluation:
+                    nota_didatica: 8
+                    nota_dominio_conteudo: 9
+                    nota_relacionamento: 7
+                    observacoes: "Candidato demonstrou bom dominio do conteudo"
+                    aprovado: true
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Status invalido"
+        '404':
+          description: Agendamento nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Agendamento nao encontrado"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags:
+        - booking
+      summary: Cancelar agendamento
+      description: |
+        Cancela um agendamento existente.
+
+        **Efeitos do cancelamento:**
+        - Status alterado para 'cancelado'
+        - Eventos do Google Calendar sao removidos (coordenador e candidato)
+        - Slot e liberado para novos agendamentos
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: cancelBooking
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID do agendamento
+          schema:
+            type: integer
+            example: 1
+      responses:
+        '200':
+          description: Agendamento cancelado com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Agendamento cancelado com sucesso"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Agendamento nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Agendamento nao encontrado"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ============================================================================
+  # SCHEDULE
+  # ============================================================================
+  /schedule:
+    get:
+      tags:
+        - schedule
+      summary: Consultar configuracao de horarios
+      description: |
+        Retorna a configuracao de horarios para uma unidade ou a configuracao global.
+
+        **Hierarquia de configuracao:**
+        1. Se `id_unidade` for informado e existir config especifica, retorna ela
+        2. Se `id_unidade` for informado mas nao houver config especifica, retorna global
+        3. Se `id_unidade` nao for informado, retorna global
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: getScheduleConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id_unidade
+          in: query
+          required: false
+          description: |
+            ID da unidade para buscar configuracao especifica.
+            Se omitido, retorna a configuracao global.
+          schema:
+            type: integer
+            example: 123
+      responses:
+        '200':
+          description: Configuracao retornada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleConfigResponse'
+              examples:
+                global:
+                  summary: Configuracao global
+                  value:
+                    success: true
+                    config:
+                      id_schedule_config: 1
+                      id_unidade: null
+                      morning_start_at: "08:00:00"
+                      morning_end_at: "12:00:00"
+                      afternoon_start_at: "13:00:00"
+                      afternoon_end_at: "17:00:00"
+                      slot_size: 50
+                      d_rule_start: 1
+                      d_rule_end: 30
+                      valid_from: null
+                      valid_until: null
+                      active: true
+                    is_global: true
+                unidade:
+                  summary: Configuracao especifica de unidade
+                  value:
+                    success: true
+                    config:
+                      id_schedule_config: 5
+                      id_unidade: 123
+                      morning_start_at: "07:30:00"
+                      morning_end_at: "11:30:00"
+                      afternoon_start_at: "13:30:00"
+                      afternoon_end_at: "17:30:00"
+                      slot_size: 45
+                      d_rule_start: 2
+                      d_rule_end: 15
+                      valid_from: "2025-01-01"
+                      valid_until: "2025-06-30"
+                      active: true
+                    is_global: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Configuracao nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Configuracao de horarios nao encontrada"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags:
+        - schedule
+      summary: Criar ou atualizar configuracao de horarios
+      description: |
+        Cria ou atualiza a configuracao de horarios.
+
+        **Comportamento:**
+        - Se `id_unidade` for `null` ou omitido, afeta a configuracao global
+        - Se `id_unidade` for informado, cria/atualiza config especifica da unidade
+        - Operacao de upsert: cria se nao existir, atualiza se existir
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: upsertScheduleConfig
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScheduleConfigRequest'
+            examples:
+              global:
+                summary: Configuracao global
+                value:
+                  id_unidade: null
+                  morning_start_at: "08:00:00"
+                  morning_end_at: "12:00:00"
+                  afternoon_start_at: "13:00:00"
+                  afternoon_end_at: "17:00:00"
+                  slot_size: 50
+                  d_rule_start: 1
+                  d_rule_end: 30
+              unidade:
+                summary: Configuracao especifica de unidade
+                value:
+                  id_unidade: 123
+                  morning_start_at: "07:30:00"
+                  morning_end_at: "11:30:00"
+                  afternoon_start_at: "13:30:00"
+                  afternoon_end_at: "17:30:00"
+                  slot_size: 45
+                  d_rule_start: 2
+                  d_rule_end: 15
+                  valid_from: "2025-01-01"
+                  valid_until: "2025-06-30"
+      responses:
+        '200':
+          description: Configuracao atualizada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleConfigResponse'
+              example:
+                success: true
+                message: "Configuracao atualizada com sucesso"
+                config:
+                  id_schedule_config: 5
+                  id_unidade: 123
+                  morning_start_at: "07:30:00"
+                  morning_end_at: "11:30:00"
+                  afternoon_start_at: "13:30:00"
+                  afternoon_end_at: "17:30:00"
+                  slot_size: 45
+                  d_rule_start: 2
+                  d_rule_end: 15
+                  valid_from: "2025-01-01"
+                  valid_until: "2025-06-30"
+                  active: true
+        '201':
+          description: Configuracao criada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleConfigResponse'
+              example:
+                success: true
+                message: "Configuracao criada com sucesso"
+                config:
+                  id_schedule_config: 6
+                  id_unidade: 456
+                  morning_start_at: "08:00:00"
+                  morning_end_at: "12:00:00"
+                  afternoon_start_at: "13:00:00"
+                  afternoon_end_at: "17:00:00"
+                  slot_size: 50
+                  d_rule_start: 1
+                  d_rule_end: 30
+                  valid_from: null
+                  valid_until: null
+                  active: true
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                errors:
+                  - msg: "slot_size deve estar entre 15 e 120 minutos"
+                    param: "slot_size"
+                    location: "body"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /schedule/{id_unidade}:
+    delete:
+      tags:
+        - schedule
+      summary: Remover configuracao de unidade
+      description: |
+        Remove a configuracao especifica de uma unidade.
+
+        Apos a remocao, a unidade passa a usar a configuracao global.
+
+        **Nota:** Nao e possivel remover a configuracao global (id_unidade = null).
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: deleteScheduleConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id_unidade
+          in: path
+          required: true
+          description: ID da unidade cuja configuracao sera removida
+          schema:
+            type: integer
+            example: 123
+      responses:
+        '200':
+          description: Configuracao removida com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Configuracao removida. A unidade agora usa a configuracao global."
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Configuracao nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Configuracao especifica nao encontrada para esta unidade"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ============================================================================
+  # SCHEDULE-BLOCK
+  # ============================================================================
+  /schedule-block:
+    get:
+      tags:
+        - schedule-block
+      summary: Listar bloqueios de horario
+      description: |
+        Lista os bloqueios de horario configurados.
+
+        Bloqueios impedem que candidatos agendem em determinados periodos
+        (ex: ferias do coordenador, reunioes, etc).
+
+        **Regra de prioridade:** Booking > Block. Agendamentos existentes
+        nao sao afetados por bloqueios criados posteriormente.
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: listScheduleBlocks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id_unidade
+          in: query
+          required: false
+          description: Filtrar por ID da unidade
+          schema:
+            type: integer
+            example: 123
+        - name: active_only
+          in: query
+          required: false
+          description: Retornar apenas bloqueios ativos (data_fim >= hoje)
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Lista de bloqueios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  blocks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ScheduleBlock'
+              example:
+                success: true
+                blocks:
+                  - id_schedule_block: 1
+                    id_unidade: 123
+                    date_start: "2025-01-20"
+                    date_end: "2025-01-24"
+                    time_start: null
+                    time_end: null
+                    reason: "Ferias do coordenador"
+                    created_at: "2025-01-10T10:00:00-03:00"
+                  - id_schedule_block: 2
+                    id_unidade: 123
+                    date_start: "2025-02-01"
+                    date_end: "2025-02-01"
+                    time_start: "14:00:00"
+                    time_end: "16:00:00"
+                    reason: "Reuniao pedagogica"
+                    created_at: "2025-01-15T09:00:00-03:00"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags:
+        - schedule-block
+      summary: Criar bloqueio de horario
+      description: |
+        Cria um novo bloqueio de horario para uma unidade.
+
+        **Tipos de bloqueio:**
+        - Dia inteiro: omitir `time_start` e `time_end`
+        - Horario especifico: informar `time_start` e `time_end`
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: createScheduleBlock
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleBlockRequest'
+            examples:
+              diaInteiro:
+                summary: Bloqueio de dia inteiro
+                value:
+                  id_unidade: 123
+                  date_start: "2025-01-20"
+                  date_end: "2025-01-24"
+                  reason: "Ferias do coordenador"
+              horarioEspecifico:
+                summary: Bloqueio de horario especifico
+                value:
+                  id_unidade: 123
+                  date_start: "2025-02-01"
+                  date_end: "2025-02-01"
+                  time_start: "14:00:00"
+                  time_end: "16:00:00"
+                  reason: "Reuniao pedagogica"
+      responses:
+        '201':
+          description: Bloqueio criado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleBlockResponse'
+              example:
+                success: true
+                message: "Bloqueio criado com sucesso"
+                block:
+                  id_schedule_block: 1
+                  id_unidade: 123
+                  date_start: "2025-01-20"
+                  date_end: "2025-01-24"
+                  time_start: null
+                  time_end: null
+                  reason: "Ferias do coordenador"
+                  created_at: "2025-01-10T10:00:00-03:00"
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                dataInvalida:
+                  summary: Data fim anterior a data inicio
+                  value:
+                    success: false
+                    error: "Data de fim deve ser igual ou posterior a data de inicio"
+                horarioIncompleto:
+                  summary: Horario de inicio sem horario de fim
+                  value:
+                    success: false
+                    error: "Se time_start for informado, time_end tambem deve ser"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /schedule-block/{id}:
+    patch:
+      tags:
+        - schedule-block
+      summary: Atualizar bloqueio de horario
+      description: |
+        Atualiza um bloqueio de horario existente.
+
+        Todos os campos sao opcionais. Apenas os campos informados serao atualizados.
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: updateScheduleBlock
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID do bloqueio
+          schema:
+            type: integer
+            example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScheduleBlockRequest'
+            example:
+              date_end: "2025-01-26"
+              reason: "Ferias do coordenador - estendido"
+      responses:
+        '200':
+          description: Bloqueio atualizado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleBlockResponse'
+              example:
+                success: true
+                message: "Bloqueio atualizado com sucesso"
+                block:
+                  id_schedule_block: 1
+                  id_unidade: 123
+                  date_start: "2025-01-20"
+                  date_end: "2025-01-26"
+                  time_start: null
+                  time_end: null
+                  reason: "Ferias do coordenador - estendido"
+                  created_at: "2025-01-10T10:00:00-03:00"
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Bloqueio nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Bloqueio nao encontrado"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags:
+        - schedule-block
+      summary: Remover bloqueio de horario
+      description: |
+        Remove um bloqueio de horario.
+
+        Apos a remocao, os slots previamente bloqueados voltam a ficar disponiveis.
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: deleteScheduleBlock
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID do bloqueio
+          schema:
+            type: integer
+            example: 1
+      responses:
+        '200':
+          description: Bloqueio removido com sucesso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Bloqueio removido com sucesso"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Bloqueio nao encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Bloqueio nao encontrado"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ============================================================================
+  # JOB
+  # ============================================================================
+  /job:
+    get:
+      tags:
+        - job
+      summary: Listar vagas
+      description: |
+        Lista as vagas disponiveis.
+
+        Este endpoint e **publico** (candidatos precisam ver as vagas disponiveis).
+
+        **Filtros disponiveis:**
+        - `id`: Busca vaga especifica por ID
+        - `subregional`: Filtra por ID da subregional
+        - `status`: Filtra por status da vaga
+        - `include=unidades`: Inclui lista de unidades vinculadas a cada vaga
+      operationId: listJobs
+      security: []
+      parameters:
+        - name: id
+          in: query
+          required: false
+          description: ID da vaga (busca especifica)
+          schema:
+            type: integer
+            example: 1
+        - name: subregional
+          in: query
+          required: false
+          description: Filtrar por ID da subregional
+          schema:
+            type: integer
+            example: 5
+        - name: status
+          in: query
+          required: false
+          description: Filtrar por status da vaga
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - name: include
+          in: query
+          required: false
+          description: Recursos adicionais a incluir na resposta
+          schema:
+            type: string
+            enum:
+              - unidades
+            example: unidades
+      responses:
+        '200':
+          description: Lista de vagas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  jobs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+              examples:
+                semUnidades:
+                  summary: Resposta sem unidades
+                  value:
+                    success: true
+                    jobs:
+                      - id_job_subregional: 1
+                        id_job_gupy: "job_gupy_123"
+                        job_name: "Professor de Matematica"
+                        id_subregional: 5
+                        subregional_nome: "Subregional Centro"
+                        status: "published"
+                        created_at: "2025-01-05T10:00:00-03:00"
+                comUnidades:
+                  summary: Resposta com unidades (include=unidades)
+                  value:
+                    success: true
+                    jobs:
+                      - id_job_subregional: 1
+                        id_job_gupy: "job_gupy_123"
+                        job_name: "Professor de Matematica"
+                        id_subregional: 5
+                        subregional_nome: "Subregional Centro"
+                        status: "published"
+                        created_at: "2025-01-05T10:00:00-03:00"
+                        unidades:
+                          - id_job_unidade: 10
+                            id_unidade: 123
+                            unidade_nome: "Escola Centro"
+                            active: true
+                          - id_job_unidade: 11
+                            id_unidade: 456
+                            unidade_nome: "Escola Norte"
+                            active: true
+        '400':
+          description: Parametros de consulta invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                errors:
+                  - msg: "status deve ser um de: draft, published, closed"
+                    param: "status"
+                    location: "query"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags:
+        - job
+      summary: Criar vaga
+      description: |
+        Cria uma nova vaga vinculada a uma subregional.
+
+        A vaga e registrada no banco de dados local e pode ser posteriormente
+        vinculada a unidades especificas.
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: createJob
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+            example:
+              id_job_gupy: "job_gupy_123"
+              job_name: "Professor de Matematica"
+              id_subregional: 5
+              unidades:
+                - id_unidade: 123
+                - id_unidade: 456
+      responses:
+        '201':
+          description: Vaga criada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+              example:
+                success: true
+                message: "Vaga criada com sucesso"
+                job:
+                  id_job_subregional: 1
+                  id_job_gupy: "job_gupy_123"
+                  job_name: "Professor de Matematica"
+                  id_subregional: 5
+                  status: "draft"
+                  created_at: "2025-01-05T10:00:00-03:00"
+                  unidades:
+                    - id_job_unidade: 10
+                      id_unidade: 123
+                      active: true
+                    - id_job_unidade: 11
+                      id_unidade: 456
+                      active: true
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                vagaJaExiste:
+                  summary: Vaga ja existe para esta subregional
+                  value:
+                    success: false
+                    error: "Vaga com este id_job_gupy ja existe para a subregional"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /job/{id}:
+    patch:
+      tags:
+        - job
+      summary: Atualizar vaga
+      description: |
+        Atualiza dados de uma vaga existente.
+
+        **Campos atualizaveis:**
+        - `status`: Altera o status da vaga (draft, published, closed)
+        - `job_name`: Atualiza o nome da vaga
+        - `unidades`: Atualiza a lista de unidades vinculadas
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: updateJob
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID da vaga (id_job_subregional)
+          schema:
+            type: integer
+            example: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateJobRequest'
+            examples:
+              publicar:
+                summary: Publicar vaga
+                value:
+                  status: "published"
+              adicionarUnidade:
+                summary: Adicionar unidade
+                value:
+                  unidades:
+                    - id_unidade: 789
+                      action: "add"
+              removerUnidade:
+                summary: Desativar unidade
+                value:
+                  unidades:
+                    - id_job_unidade: 10
+                      action: "deactivate"
+      responses:
+        '200':
+          description: Vaga atualizada com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+              example:
+                success: true
+                message: "Vaga atualizada com sucesso"
+                job:
+                  id_job_subregional: 1
+                  id_job_gupy: "job_gupy_123"
+                  job_name: "Professor de Matematica"
+                  id_subregional: 5
+                  status: "published"
+                  created_at: "2025-01-05T10:00:00-03:00"
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Vaga nao encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Vaga nao encontrada"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  # ============================================================================
+  # GUPY
+  # ============================================================================
+  /gupy/unidades/{id}/applications:
+    get:
+      tags:
+        - gupy
+      summary: Buscar candidatos de uma unidade
+      description: |
+        Busca candidatos na API Gupy para uma unidade especifica.
+
+        Usado para agendamento manual: a equipe de recrutamento busca
+        o candidato por CPF e realiza o agendamento.
+
+        **Nota:** Retorna candidatos de todas as fases do processo seletivo
+        (sem filtro de fase).
+
+        Requer autenticacao com role `recrutamento` ou `admin`.
+      operationId: getGupyApplications
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: ID da unidade
+          schema:
+            type: integer
+            example: 123
+        - name: cpf
+          in: query
+          required: false
+          description: CPF do candidato para busca especifica (somente digitos)
+          schema:
+            type: string
+            pattern: '^\d{11}$'
+            example: "12345678901"
+        - name: job_id
+          in: query
+          required: false
+          description: ID da vaga no Gupy para filtrar candidatos
+          schema:
+            type: string
+            example: "job_gupy_123"
+      responses:
+        '200':
+          description: Lista de candidatos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  applications:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/GupyApplication'
+              example:
+                success: true
+                applications:
+                  - id_application: "app_gupy_456"
+                    candidate_name: "Maria Silva"
+                    candidate_email: "maria@email.com"
+                    candidate_cpf: "12345678901"
+                    candidate_phone: "11999999999"
+                    job_id: "job_gupy_123"
+                    job_name: "Professor de Matematica"
+                    current_step: "Aula Teste"
+                    applied_at: "2025-01-01T10:00:00-03:00"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unidade nao encontrada ou sem vagas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Nenhuma vaga encontrada para esta unidade"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+        '502':
+          description: Erro na comunicacao com API Gupy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Erro ao comunicar com API Gupy"
+                details: "Timeout na requisicao"
+
+  # ============================================================================
+  # AUTH
+  # ============================================================================
+  /auth/login:
+    post:
+      tags:
+        - auth
+      summary: Realizar login
+      description: |
+        Autentica um usuario e retorna um token JWT.
+
+        O token deve ser enviado no header `Authorization` das requisicoes
+        subsequentes no formato `Bearer {token}`.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: "usuario@tomeducacao.com.br"
+              password: "senha123"
+      responses:
+        '200':
+          description: Login realizado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                success: true
+                token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                user:
+                  id_usuario: 1
+                  email: "usuario@tomeducacao.com.br"
+                  nome: "Usuario Teste"
+                  role: "recrutamento"
+                  id_unidade: 123
+        '400':
+          description: Dados de login invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Email e senha sao obrigatorios"
+        '401':
+          description: Credenciais invalidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                success: false
+                error: "Email ou senha invalidos"
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/register:
+    post:
+      tags:
+        - auth
+      summary: Registrar novo usuario
+      description: |
+        Registra um novo usuario no sistema.
+
+        **Restricao:** Apenas usuarios com role `admin` podem registrar novos usuarios.
+      operationId: register
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              email: "novo.usuario@tomeducacao.com.br"
+              password: "senha123"
+              nome: "Novo Usuario"
+              role: "recrutamento"
+              id_unidade: 123
+      responses:
+        '201':
+          description: Usuario registrado com sucesso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+              example:
+                success: true
+                message: "Usuario registrado com sucesso"
+                user:
+                  id_usuario: 2
+                  email: "novo.usuario@tomeducacao.com.br"
+                  nome: "Novo Usuario"
+                  role: "recrutamento"
+                  id_unidade: 123
+        '400':
+          description: Dados invalidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                emailJaExiste:
+                  summary: Email ja cadastrado
+                  value:
+                    success: false
+                    error: "Email ja cadastrado"
+                senhaFraca:
+                  summary: Senha nao atende requisitos
+                  value:
+                    success: false
+                    error: "Senha deve ter no minimo 8 caracteres"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /auth/me:
+    get:
+      tags:
+        - auth
+      summary: Obter dados do usuario logado
+      description: |
+        Retorna os dados do usuario autenticado com base no token JWT.
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Dados do usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+              example:
+                success: true
+                user:
+                  id_usuario: 1
+                  email: "usuario@tomeducacao.com.br"
+                  nome: "Usuario Teste"
+                  role: "recrutamento"
+                  id_unidade: 123
+                  unidade_nome: "Escola Centro"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+# ==============================================================================
+# COMPONENTS
+# ==============================================================================
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Token JWT obtido atraves do endpoint `/auth/login`.
+
+        Enviar no header: `Authorization: Bearer {token}`
+
+  responses:
+    Unauthorized:
+      description: Token nao fornecido ou invalido
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Token nao fornecido ou invalido"
+
+    Forbidden:
+      description: Usuario nao tem permissao para esta acao
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Acesso negado. Permissao insuficiente."
+
+    InternalServerError:
+      description: Erro interno do servidor
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error: "Erro interno do servidor"
+
+  schemas:
+    # --------------------------------------------------------------------------
+    # Common Schemas
+    # --------------------------------------------------------------------------
+    ErrorResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Mensagem de erro
+          example: "Descricao do erro"
+        errors:
+          type: array
+          description: Lista de erros de validacao
+          items:
+            type: object
+            properties:
+              msg:
+                type: string
+                example: "Campo obrigatorio"
+              param:
+                type: string
+                example: "id_unidade"
+              location:
+                type: string
+                example: "query"
+        details:
+          type: string
+          description: Detalhes adicionais do erro (desenvolvimento)
+
+    # --------------------------------------------------------------------------
+    # Availability Schemas
+    # --------------------------------------------------------------------------
+    AvailabilityResponse:
+      type: object
+      required:
+        - success
+        - config
+        - pagination
+        - slots
+      properties:
+        success:
+          type: boolean
+          example: true
+        config:
+          $ref: '#/components/schemas/AvailabilityConfig'
+        pagination:
+          $ref: '#/components/schemas/WeekPagination'
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/Slot'
+
+    AvailabilityConfig:
+      type: object
+      required:
+        - slot_size
+      properties:
+        slot_size:
+          type: integer
+          description: Duracao do slot em minutos
+          example: 50
+        morning_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da manha (apenas para autenticados)
+          example: "08:00:00"
+        morning_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da manha (apenas para autenticados)
+          example: "12:00:00"
+        afternoon_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da tarde (apenas para autenticados)
+          example: "13:00:00"
+        afternoon_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da tarde (apenas para autenticados)
+          example: "17:00:00"
+        d_rule_start:
+          type: integer
+          description: Dias minimos de antecedencia para agendamento (apenas para autenticados)
+          example: 1
+        d_rule_end:
+          type: integer
+          description: Dias maximos de antecedencia para agendamento (apenas para autenticados)
+          example: 30
+        valid_from:
+          type: string
+          format: date
+          nullable: true
+          description: Data de inicio da validade da configuracao (apenas para autenticados)
+          example: "2025-01-01"
+        valid_until:
+          type: string
+          format: date
+          nullable: true
+          description: Data de fim da validade da configuracao (apenas para autenticados)
+          example: "2025-03-31"
+
+    WeekPagination:
+      type: object
+      required:
+        - current_page
+        - total_pages
+        - week_start
+        - week_end
+      properties:
+        current_page:
+          type: integer
+          description: Pagina (semana) atual
+          minimum: 1
+          example: 1
+        total_pages:
+          type: integer
+          description: Total de paginas (semanas) disponiveis
+          minimum: 0
+          example: 4
+        week_start:
+          type: string
+          format: date
+          description: Data de inicio da semana atual
+          example: "2025-01-06"
+        week_end:
+          type: string
+          format: date
+          description: Data de fim da semana atual
+          example: "2025-01-10"
+
+    Slot:
+      type: object
+      required:
+        - date
+        - day_of_week
+        - slot_start
+        - slot_end
+        - status
+      properties:
+        date:
+          type: string
+          format: date
+          description: Data do slot
+          example: "2025-01-06"
+        day_of_week:
+          type: string
+          description: Dia da semana em portugues
+          example: "segunda-feira"
+        slot_start:
+          type: string
+          format: time
+          description: Horario de inicio do slot
+          example: "08:00:00"
+        slot_end:
+          type: string
+          format: time
+          description: Horario de fim do slot
+          example: "08:50:00"
+        status:
+          $ref: '#/components/schemas/SlotStatus'
+        booking_id:
+          type: integer
+          description: ID do agendamento (apenas para slots ocupados, apenas para autenticados)
+          example: 456
+        candidate_name:
+          type: string
+          maxLength: 200
+          description: Nome do candidato (apenas para slots ocupados, apenas para autenticados)
+          example: "Maria Silva"
+
+    SlotStatus:
+      type: string
+      enum:
+        - vago
+        - ocupado
+        - bloqueado
+      description: |
+        Status do slot:
+        - `vago`: Disponivel para agendamento
+        - `ocupado`: Ja existe agendamento neste horario
+        - `bloqueado`: Bloqueado por configuracao (schedule_block)
+
+    # --------------------------------------------------------------------------
+    # Booking Schemas
+    # --------------------------------------------------------------------------
+    BookingStatus:
+      type: string
+      enum:
+        - agendado
+        - compareceu
+        - faltou
+        - cancelado
+      description: |
+        Status do agendamento:
+        - `agendado`: Agendamento confirmado, aguardando aula teste
+        - `compareceu`: Candidato compareceu a aula teste
+        - `faltou`: Candidato nao compareceu (no-show)
+        - `cancelado`: Agendamento foi cancelado
+
+    BookingListItem:
+      type: object
+      required:
+        - id_booking
+        - id_job_unidade
+        - id_application_gupy
+        - start_at
+        - end_at
+        - status_booking
+        - created_at
+      properties:
+        id_booking:
+          type: integer
+          description: ID do agendamento
+          example: 1
+        id_job_unidade:
+          type: integer
+          description: ID do vinculo vaga-unidade
+          example: 10
+        id_application_gupy:
+          type: string
+          description: ID da candidatura no Gupy
+          example: "app_gupy_456"
+        cpf:
+          type: string
+          pattern: '^\d{11}$'
+          maxLength: 11
+          description: CPF do candidato (somente digitos)
+          example: "12345678901"
+        candidate_name:
+          type: string
+          maxLength: 200
+          description: Nome do candidato (buscado do Gupy)
+          example: "Maria Silva"
+        candidate_email:
+          type: string
+          format: email
+          description: Email do candidato (buscado do Gupy)
+          example: "maria@email.com"
+        start_at:
+          type: string
+          format: date-time
+          description: Data/hora de inicio do agendamento
+          example: "2025-01-15T09:00:00-03:00"
+        end_at:
+          type: string
+          format: date-time
+          description: Data/hora de fim do agendamento
+          example: "2025-01-15T09:50:00-03:00"
+        status_booking:
+          $ref: '#/components/schemas/BookingStatus'
+        unidade_nome:
+          type: string
+          maxLength: 200
+          description: Nome da unidade
+          example: "Escola Centro"
+        job_name:
+          type: string
+          maxLength: 200
+          description: Nome da vaga
+          example: "Professor de Matematica"
+        evaluation:
+          $ref: '#/components/schemas/BookingEvaluation'
+        id_calendar_event:
+          type: string
+          nullable: true
+          description: ID do evento no Google Calendar (coordenador)
+          example: "cal_event_123"
+        id_calendar_event_candidato:
+          type: string
+          nullable: true
+          description: ID do evento no Google Calendar (candidato)
+          example: "cal_event_456"
+        created_at:
+          type: string
+          format: date-time
+          description: Data/hora de criacao do agendamento
+          example: "2025-01-10T14:30:00-03:00"
+        created_by:
+          type: integer
+          nullable: true
+          description: ID do usuario que criou (null = candidato)
+          example: null
+
+    BookingEvaluation:
+      type: object
+      nullable: true
+      description: Avaliacao da aula teste
+      properties:
+        nota_didatica:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 10
+          description: Nota para didatica
+          example: 8
+        nota_dominio_conteudo:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 10
+          description: Nota para dominio do conteudo
+          example: 9
+        nota_relacionamento:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 10
+          description: Nota para relacionamento interpessoal
+          example: 7
+        observacoes:
+          type: string
+          maxLength: 2000
+          description: Observacoes adicionais
+          example: "Candidato demonstrou bom dominio do conteudo"
+        aprovado:
+          type: boolean
+          description: Indica se o candidato foi aprovado
+          example: true
+
+    CreateBookingRequest:
+      type: object
+      required:
+        - id_job_unidade
+        - start_at
+      properties:
+        id_job_unidade:
+          type: integer
+          description: ID do vinculo vaga-unidade
+          example: 10
+        jobId:
+          type: string
+          description: ID da vaga no Gupy (obrigatorio para fluxo publico)
+          example: "job_gupy_123"
+        applicationId:
+          type: string
+          description: ID da candidatura no Gupy (obrigatorio para fluxo publico)
+          example: "app_gupy_456"
+        id_application_gupy:
+          type: string
+          description: ID da candidatura no Gupy (para fluxo privado/manual)
+          example: "app_gupy_456"
+        cpf:
+          type: string
+          pattern: '^\d{11}$'
+          maxLength: 11
+          description: CPF do candidato (para fluxo privado/manual)
+          example: "12345678901"
+        candidate_name:
+          type: string
+          maxLength: 200
+          description: Nome do candidato (para fluxo privado/manual)
+          example: "Maria Silva"
+        candidate_email:
+          type: string
+          format: email
+          description: Email do candidato (para fluxo privado/manual)
+          example: "maria@email.com"
+        start_at:
+          type: string
+          format: date-time
+          description: Data/hora de inicio do agendamento
+          example: "2025-01-15T09:00:00-03:00"
+
+    UpdateBookingRequest:
+      type: object
+      properties:
+        status_booking:
+          $ref: '#/components/schemas/BookingStatus'
+        evaluation:
+          $ref: '#/components/schemas/BookingEvaluation'
+
+    BookingResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Agendamento criado com sucesso"
+        booking:
+          $ref: '#/components/schemas/BookingListItem'
+
+    # --------------------------------------------------------------------------
+    # Schedule Config Schemas
+    # --------------------------------------------------------------------------
+    ScheduleConfig:
+      type: object
+      required:
+        - id_schedule_config
+        - morning_start_at
+        - morning_end_at
+        - afternoon_start_at
+        - afternoon_end_at
+        - slot_size
+        - d_rule_start
+        - d_rule_end
+        - active
+      properties:
+        id_schedule_config:
+          type: integer
+          description: ID da configuracao
+          example: 1
+        id_unidade:
+          type: integer
+          nullable: true
+          description: ID da unidade (null = configuracao global)
+          example: 123
+        morning_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da manha
+          example: "08:00:00"
+        morning_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da manha
+          example: "12:00:00"
+        afternoon_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da tarde
+          example: "13:00:00"
+        afternoon_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da tarde
+          example: "17:00:00"
+        slot_size:
+          type: integer
+          minimum: 15
+          maximum: 120
+          description: Duracao do slot em minutos
+          example: 50
+        d_rule_start:
+          type: integer
+          minimum: 0
+          description: Dias minimos de antecedencia para agendamento
+          example: 1
+        d_rule_end:
+          type: integer
+          minimum: 1
+          description: Dias maximos de antecedencia para agendamento
+          example: 30
+        valid_from:
+          type: string
+          format: date
+          nullable: true
+          description: Data de inicio da validade da configuracao
+          example: "2025-01-01"
+        valid_until:
+          type: string
+          format: date
+          nullable: true
+          description: Data de fim da validade da configuracao
+          example: "2025-03-31"
+        active:
+          type: boolean
+          description: Indica se a configuracao esta ativa
+          example: true
+
+    ScheduleConfigRequest:
+      type: object
+      required:
+        - morning_start_at
+        - morning_end_at
+        - afternoon_start_at
+        - afternoon_end_at
+        - slot_size
+        - d_rule_start
+        - d_rule_end
+      properties:
+        id_unidade:
+          type: integer
+          nullable: true
+          description: ID da unidade (null = configuracao global)
+          example: 123
+        morning_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da manha
+          example: "08:00:00"
+        morning_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da manha
+          example: "12:00:00"
+        afternoon_start_at:
+          type: string
+          format: time
+          description: Horario de inicio do periodo da tarde
+          example: "13:00:00"
+        afternoon_end_at:
+          type: string
+          format: time
+          description: Horario de fim do periodo da tarde
+          example: "17:00:00"
+        slot_size:
+          type: integer
+          minimum: 15
+          maximum: 120
+          description: Duracao do slot em minutos
+          example: 50
+        d_rule_start:
+          type: integer
+          minimum: 0
+          description: Dias minimos de antecedencia para agendamento
+          example: 1
+        d_rule_end:
+          type: integer
+          minimum: 1
+          description: Dias maximos de antecedencia para agendamento
+          example: 30
+        valid_from:
+          type: string
+          format: date
+          nullable: true
+          description: Data de inicio da validade da configuracao
+          example: "2025-01-01"
+        valid_until:
+          type: string
+          format: date
+          nullable: true
+          description: Data de fim da validade da configuracao
+          example: "2025-03-31"
+        active:
+          type: boolean
+          default: true
+          description: Indica se a configuracao esta ativa
+          example: true
+
+    ScheduleConfigResponse:
+      type: object
+      required:
+        - success
+        - config
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Configuracao atualizada com sucesso"
+        config:
+          $ref: '#/components/schemas/ScheduleConfig'
+        is_global:
+          type: boolean
+          description: Indica se a configuracao retornada e global
+          example: false
+
+    # --------------------------------------------------------------------------
+    # Schedule Block Schemas
+    # --------------------------------------------------------------------------
+    ScheduleBlock:
+      type: object
+      required:
+        - id_schedule_block
+        - id_unidade
+        - date_start
+        - date_end
+        - created_at
+      properties:
+        id_schedule_block:
+          type: integer
+          description: ID do bloqueio
+          example: 1
+        id_unidade:
+          type: integer
+          description: ID da unidade
+          example: 123
+        date_start:
+          type: string
+          format: date
+          description: Data de inicio do bloqueio
+          example: "2025-01-20"
+        date_end:
+          type: string
+          format: date
+          description: Data de fim do bloqueio
+          example: "2025-01-24"
+        time_start:
+          type: string
+          format: time
+          nullable: true
+          description: Horario de inicio do bloqueio (null = dia inteiro)
+          example: "14:00:00"
+        time_end:
+          type: string
+          format: time
+          nullable: true
+          description: Horario de fim do bloqueio (null = dia inteiro)
+          example: "16:00:00"
+        reason:
+          type: string
+          maxLength: 500
+          description: Motivo do bloqueio
+          example: "Ferias do coordenador"
+        created_at:
+          type: string
+          format: date-time
+          description: Data/hora de criacao do bloqueio
+          example: "2025-01-10T10:00:00-03:00"
+
+    CreateScheduleBlockRequest:
+      type: object
+      required:
+        - id_unidade
+        - date_start
+        - date_end
+      properties:
+        id_unidade:
+          type: integer
+          description: ID da unidade
+          example: 123
+        date_start:
+          type: string
+          format: date
+          description: Data de inicio do bloqueio
+          example: "2025-01-20"
+        date_end:
+          type: string
+          format: date
+          description: Data de fim do bloqueio
+          example: "2025-01-24"
+        time_start:
+          type: string
+          format: time
+          nullable: true
+          description: Horario de inicio do bloqueio (omitir para dia inteiro)
+          example: "14:00:00"
+        time_end:
+          type: string
+          format: time
+          nullable: true
+          description: Horario de fim do bloqueio (omitir para dia inteiro)
+          example: "16:00:00"
+        reason:
+          type: string
+          maxLength: 500
+          description: Motivo do bloqueio
+          example: "Ferias do coordenador"
+
+    UpdateScheduleBlockRequest:
+      type: object
+      properties:
+        date_start:
+          type: string
+          format: date
+          description: Nova data de inicio do bloqueio
+          example: "2025-01-20"
+        date_end:
+          type: string
+          format: date
+          description: Nova data de fim do bloqueio
+          example: "2025-01-26"
+        time_start:
+          type: string
+          format: time
+          nullable: true
+          description: Novo horario de inicio do bloqueio
+          example: "14:00:00"
+        time_end:
+          type: string
+          format: time
+          nullable: true
+          description: Novo horario de fim do bloqueio
+          example: "16:00:00"
+        reason:
+          type: string
+          maxLength: 500
+          description: Novo motivo do bloqueio
+          example: "Ferias do coordenador - estendido"
+
+    ScheduleBlockResponse:
+      type: object
+      required:
+        - success
+        - block
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Bloqueio criado com sucesso"
+        block:
+          $ref: '#/components/schemas/ScheduleBlock'
+
+    # --------------------------------------------------------------------------
+    # Job Schemas
+    # --------------------------------------------------------------------------
+    JobStatus:
+      type: string
+      enum:
+        - draft
+        - published
+        - closed
+      description: |
+        Status da vaga:
+        - `draft`: Rascunho, nao visivel publicamente
+        - `published`: Publicada, candidatos podem visualizar e se candidatar
+        - `closed`: Fechada, nao aceita novas candidaturas
+
+    Job:
+      type: object
+      required:
+        - id_job_subregional
+        - id_job_gupy
+        - job_name
+        - id_subregional
+        - status
+        - created_at
+      properties:
+        id_job_subregional:
+          type: integer
+          description: ID interno da vaga
+          example: 1
+        id_job_gupy:
+          type: string
+          description: ID da vaga no Gupy
+          example: "job_gupy_123"
+        job_name:
+          type: string
+          maxLength: 200
+          description: Nome da vaga
+          example: "Professor de Matematica"
+        id_subregional:
+          type: integer
+          description: ID da subregional
+          example: 5
+        subregional_nome:
+          type: string
+          description: Nome da subregional
+          example: "Subregional Centro"
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        created_at:
+          type: string
+          format: date-time
+          description: Data/hora de criacao da vaga
+          example: "2025-01-05T10:00:00-03:00"
+        unidades:
+          type: array
+          description: Lista de unidades vinculadas (quando include=unidades)
+          items:
+            $ref: '#/components/schemas/JobUnidade'
+
+    JobUnidade:
+      type: object
+      required:
+        - id_job_unidade
+        - id_unidade
+        - active
+      properties:
+        id_job_unidade:
+          type: integer
+          description: ID do vinculo vaga-unidade
+          example: 10
+        id_unidade:
+          type: integer
+          description: ID da unidade
+          example: 123
+        unidade_nome:
+          type: string
+          maxLength: 200
+          description: Nome da unidade
+          example: "Escola Centro"
+        active:
+          type: boolean
+          description: Indica se o vinculo esta ativo
+          example: true
+        created_at:
+          type: string
+          format: date-time
+          description: Data/hora de criacao do vinculo
+          example: "2025-01-05T10:30:00-03:00"
+
+    CreateJobRequest:
+      type: object
+      required:
+        - id_job_gupy
+        - job_name
+        - id_subregional
+      properties:
+        id_job_gupy:
+          type: string
+          description: ID da vaga no Gupy
+          example: "job_gupy_123"
+        job_name:
+          type: string
+          maxLength: 200
+          description: Nome da vaga
+          example: "Professor de Matematica"
+        id_subregional:
+          type: integer
+          description: ID da subregional
+          example: 5
+        unidades:
+          type: array
+          description: Lista de unidades a vincular na criacao
+          items:
+            type: object
+            required:
+              - id_unidade
+            properties:
+              id_unidade:
+                type: integer
+                description: ID da unidade
+                example: 123
+
+    UpdateJobRequest:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        job_name:
+          type: string
+          description: Novo nome da vaga
+          example: "Professor de Matematica - Atualizado"
+        unidades:
+          type: array
+          description: Acoes sobre unidades vinculadas
+          items:
+            type: object
+            properties:
+              id_job_unidade:
+                type: integer
+                description: ID do vinculo (para acoes deactivate/activate)
+                example: 10
+              id_unidade:
+                type: integer
+                description: ID da unidade (para acao add)
+                example: 789
+              action:
+                type: string
+                enum:
+                  - add
+                  - deactivate
+                  - activate
+                description: Acao a executar
+                example: "add"
+
+    JobResponse:
+      type: object
+      required:
+        - success
+        - job
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Vaga criada com sucesso"
+        job:
+          $ref: '#/components/schemas/Job'
+
+    # --------------------------------------------------------------------------
+    # Gupy Schemas
+    # --------------------------------------------------------------------------
+    GupyApplication:
+      type: object
+      required:
+        - id_application
+        - candidate_name
+        - candidate_email
+        - job_id
+        - job_name
+        - current_step
+        - applied_at
+      properties:
+        id_application:
+          type: string
+          maxLength: 100
+          description: ID da candidatura no Gupy
+          example: "app_gupy_456"
+        candidate_name:
+          type: string
+          maxLength: 200
+          description: Nome do candidato
+          example: "Maria Silva"
+        candidate_email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email do candidato
+          example: "maria@email.com"
+        candidate_cpf:
+          type: string
+          pattern: '^\d{11}$'
+          maxLength: 11
+          description: CPF do candidato (somente digitos)
+          example: "12345678901"
+        candidate_phone:
+          type: string
+          maxLength: 20
+          description: Telefone do candidato
+          example: "11999999999"
+        job_id:
+          type: string
+          description: ID da vaga no Gupy
+          example: "job_gupy_123"
+        job_name:
+          type: string
+          maxLength: 200
+          description: Nome da vaga
+          example: "Professor de Matematica"
+        current_step:
+          type: string
+          description: Fase atual do candidato no processo seletivo
+          example: "Aula Teste"
+        applied_at:
+          type: string
+          format: date-time
+          description: Data/hora da candidatura
+          example: "2025-01-01T10:00:00-03:00"
+
+    # --------------------------------------------------------------------------
+    # Auth Schemas
+    # --------------------------------------------------------------------------
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email do usuario
+          example: "usuario@tomeducacao.com.br"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Senha do usuario
+          example: "senha123"
+
+    LoginResponse:
+      type: object
+      required:
+        - success
+        - token
+        - user
+      properties:
+        success:
+          type: boolean
+          example: true
+        token:
+          type: string
+          description: Token JWT para autenticacao
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - nome
+        - role
+      properties:
+        email:
+          type: string
+          format: email
+          description: Email do novo usuario
+          example: "novo.usuario@tomeducacao.com.br"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          description: Senha do novo usuario
+          example: "senha123"
+        nome:
+          type: string
+          description: Nome do novo usuario
+          example: "Novo Usuario"
+        role:
+          type: string
+          enum:
+            - admin
+            - recrutamento
+            - coordenador
+          description: Role do novo usuario
+          example: "recrutamento"
+        id_unidade:
+          type: integer
+          nullable: true
+          description: ID da unidade (obrigatorio para coordenador)
+          example: 123
+
+    RegisterResponse:
+      type: object
+      required:
+        - success
+        - message
+        - user
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Usuario registrado com sucesso"
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    UserInfo:
+      type: object
+      required:
+        - id_usuario
+        - email
+        - nome
+        - role
+      properties:
+        id_usuario:
+          type: integer
+          description: ID do usuario
+          example: 1
+        email:
+          type: string
+          format: email
+          description: Email do usuario
+          example: "usuario@tomeducacao.com.br"
+        nome:
+          type: string
+          description: Nome do usuario
+          example: "Usuario Teste"
+        role:
+          type: string
+          enum:
+            - admin
+            - recrutamento
+            - coordenador
+          description: Role do usuario
+          example: "recrutamento"
+        id_unidade:
+          type: integer
+          nullable: true
+          description: ID da unidade (para coordenadores)
+          example: 123
+
+    UserResponse:
+      type: object
+      required:
+        - success
+        - user
+      properties:
+        success:
+          type: boolean
+          example: true
+        user:
+          allOf:
+            - $ref: '#/components/schemas/UserInfo'
+            - type: object
+              properties:
+                unidade_nome:
+                  type: string
+                  maxLength: 200
+                  description: Nome da unidade (para coordenadores)
+                  example: "Escola Centro"

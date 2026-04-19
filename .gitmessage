@@ -1,0 +1,19 @@
+# <type>(<scope>): <subject>
+#
+# <body>
+#
+# <footer>
+#
+# Types: feat, fix, docs, style, refactor, test, chore, perf, ci, revert
+# Scopes: booking, auth, schedule, gupy, calendar, api, db, deps
+#
+# Rules:
+# - Subject: imperative mood, max 50 chars, no period
+# - Body: explain what and why, wrap at 72 chars
+# - Footer: reference issues (Fixes #123, Closes #456)
+# - Breaking changes: add ! after type or BREAKING CHANGE: in footer
+#
+# Examples:
+#   feat(booking): add cancellation endpoint
+#   fix(auth): resolve JWT expiration issue
+#   docs(readme): update installation steps
